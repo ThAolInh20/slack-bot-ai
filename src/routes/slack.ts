@@ -1,9 +1,11 @@
 import { FastifyInstance, FastifyPluginOptions } from 'fastify'
-import { verifySlackSignature, postSlackMessage, postSlackReaction } from '../lib/slackUtils'
+import { verifySlackSignature, postSlackMessage, getSlackHistory } from '../lib/slackUtils'
 import { getBotConfig } from '../config/bots'
+import { analyzeRouter, generateReply } from '../lib/aiCore'
+
+const processedEvents = new Set<string>()
 
 export default async function slackRoutes(fastify: FastifyInstance, _opts: FastifyPluginOptions) {
-  // Ensure we receive raw body for signature verification
   fastify.addContentTypeParser('application/json', { parseAs: 'buffer' }, (req, body, done) => {
     done(null, body)
   })
@@ -29,7 +31,6 @@ export default async function slackRoutes(fastify: FastifyInstance, _opts: Fasti
     try {
       body = JSON.parse(raw.toString('utf8'))
     } catch (err) {
-      fastify.log.error('Invalid JSON body')
       return reply.code(400).send({ error: 'invalid_json' })
     }
 
@@ -39,42 +40,59 @@ export default async function slackRoutes(fastify: FastifyInstance, _opts: Fasti
 
     if (body.type === 'event_callback' && body.event) {
       const ev = body.event
-      // ignore bot messages and message changes
-      if (ev.subtype === 'bot_message') return reply.code(200).send({ ok: true })
 
-      if (ev.type === 'message' && ev.text && ev.channel && botConfig.token) {
-        fastify.log.info({ channel: ev.channel, user: ev.user, botId }, 'Received message from Slack')
-
-        // 1. Reaction Logic
-        const shouldReact = Math.random() * 100 <= botConfig.reactionRate
-        if (shouldReact) {
-          const emojis = ['eyes', 'fire', 'raised_hands', 'robot_face', 'thinking_face', 'sparkles']
-          const randomEmoji = emojis[Math.floor(Math.random() * emojis.length)]
-          postSlackReaction(botConfig.token, ev.channel, ev.ts, randomEmoji)
-            .catch(err => fastify.log.error(err, 'Failed to post reaction'))
+      const eventId = ev.client_msg_id || ev.ts
+      if (eventId) {
+        if (processedEvents.has(eventId)) {
+          return reply.code(200).send({ ok: true })
         }
+        processedEvents.add(eventId)
+        if (processedEvents.size > 1000) processedEvents.clear()
+      }
 
-        // 2. Reply Logic
-        let shouldReply = false
-        if (ev.user && botConfig.alwaysReplyAccounts.includes(ev.user)) {
-          shouldReply = true
-        } else if (Math.random() * 100 <= botConfig.replyRate) {
-          shouldReply = true
-        }
-
-        if (shouldReply) {
+      if (ev.type === 'message' && ev.text && ev.channel) {
+        // Run AI Pipeline in background so we can return 200 OK to Slack immediately (avoiding 3s timeout)
+        ;(async () => {
           try {
-            // Incorporate persona for future Gemini integration
-            const prefix = botConfig.personaPrompt ? `[${botConfig.personaPrompt}] ` : ''
-            const resp = await postSlackMessage(botConfig.token, ev.channel, `${prefix}Echo from ${botId}: ${ev.text}`)
-            fastify.log.info({ resp }, 'Replied to Slack')
+            fastify.log.info({ channel: ev.channel, user: ev.user, eventId }, 'Background: Fetching history...')
+            
+            const historyMessages = await getSlackHistory(botConfig.token, ev.channel, ev.thread_ts, 10)
+            
+            const historyText = historyMessages.map((m: any) => {
+              const sender = m.bot_id ? `Bot_App_ID[${m.bot_id}]` : `User[${m.user}]`
+              return `${sender}: ${m.text}`
+            }).join('\n')
+
+            fastify.log.info('Background: Starting AI Router...')
+            let selectedBotId = await analyzeRouter(historyText)
+            
+            if (selectedBotId) {
+              selectedBotId = selectedBotId.toLowerCase().trim()
+              const targetBotConfig = getBotConfig(selectedBotId)
+              if (targetBotConfig && targetBotConfig.token) {
+                fastify.log.info({ selectedBotId }, 'Background: Router selected bot. Starting AI Worker...')
+                
+                const replyText = await generateReply(selectedBotId, targetBotConfig.personaPrompt, historyText)
+                
+                if (replyText) {
+                  // Artificial Delay to prevent API spam and make conversation natural
+                  await new Promise(resolve => setTimeout(resolve, 3000))
+                  
+                  await postSlackMessage(targetBotConfig.token, ev.channel, replyText)
+                  fastify.log.info({ selectedBotId }, 'Background: Replied to Slack via AI Worker')
+                }
+              }
+            } else {
+              fastify.log.info('Background: Router decided no bot should reply.')
+            }
           } catch (err) {
-            fastify.log.error(err, 'Failed to post reply to Slack')
+            fastify.log.error(err, 'Background AI process failed')
           }
-        }
+        })()
       }
     }
 
+    // Return 200 OK immediately to satisfy Slack's 3-second timeout rule
     return reply.code(200).send({ ok: true })
   })
 }

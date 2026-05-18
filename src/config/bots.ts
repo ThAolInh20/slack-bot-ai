@@ -6,20 +6,24 @@ export interface BotConfig {
   alwaysReplyAccounts: string[]
   personaPrompt: string
   reactionRate: number
+  
+  // Optional AI Provider settings
+  aiProvider?: 'gemini' | 'anthropic'
+  aiModel?: string
+  aiBaseUrl?: string
+  aiApiKey?: string
 }
 
 export const botsConfig: Record<string, BotConfig> = {
-  // Example bot configuration. Add more bots here by adding prefix blocks in .env
   'senna': {
     id: 'senna',
-    // Fallback to legacy SLACK_BOT_TOKEN for easier migration
     token: process.env.BOT1_TOKEN || process.env.SLACK_BOT_TOKEN || '',
     signingSecret: process.env.BOT1_SIGNING_SECRET || process.env.SLACK_SIGNING_SECRET || '',
-    replyRate: 100, // 100% chance to reply by default
-
-    alwaysReplyAccounts: ['U0AQ94AFPCL'], // Slack User IDs that always get a reply
+    replyRate: 100,
+    alwaysReplyAccounts: ['U0AQ94AFPCL'],
     personaPrompt: 'You are Senna, a helpful and witty assistant.',
-    reactionRate: 20, // 20% chance to react with an emoji
+    reactionRate: 20,
+    aiProvider: 'gemini'
   },
   'ochabi': {
     id: 'ochabi',
@@ -29,6 +33,20 @@ export const botsConfig: Record<string, BotConfig> = {
     alwaysReplyAccounts: ['U0AQ94AFPCL'],
     personaPrompt: 'You are Ochabi, a calm and precise assistant.',
     reactionRate: 10,
+    aiProvider: 'gemini'
+  },
+  'minimax_bot': {
+    id: 'minimax_bot',
+    token: process.env.BOT3_TOKEN || '',
+    signingSecret: process.env.BOT3_SIGNING_SECRET || '',
+    replyRate: 100,
+    alwaysReplyAccounts: ['U0AQ94AFPCL'],
+    personaPrompt: 'You are Mini, a highly intelligent AI assistant powered by Minimax. You speak logically and concisely.',
+    reactionRate: 10,
+    aiProvider: 'anthropic',
+    aiBaseUrl: process.env.MINIMAX_API_URL || 'https://api.minimax.io/anthropic',
+    aiModel: process.env.MINIMAX_API_MODEL || 'MiniMax-Text-01',
+    aiApiKey: process.env.MINIMAX_API_KEY
   }
 }
 
