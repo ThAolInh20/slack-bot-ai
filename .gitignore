@@ -6,3 +6,9 @@ build/
 .DS_Store
 coverage/
 *.log
+
+.agent/
+.vscode/
+.github/
+.agents/
+_bmad/
