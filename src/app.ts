@@ -1,8 +1,6 @@
+import 'dotenv/config'
 import Fastify from 'fastify'
-import dotenv from 'dotenv'
 import slackRoutes from './routes/slack'
-
-dotenv.config()
 
 const app = Fastify({ logger: true })
 

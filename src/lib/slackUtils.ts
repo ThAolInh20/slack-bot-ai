@@ -1,8 +1,7 @@
 import crypto from 'crypto'
 import { WebClient } from '@slack/web-api'
 
-export function verifySlackSignature(rawBody: Buffer, headers: any): boolean {
-  const signingSecret = process.env.SLACK_SIGNING_SECRET || ''
+export function verifySlackSignature(rawBody: Buffer, headers: any, signingSecret: string): boolean {
   const sig = headers['x-slack-signature'] as string | undefined
   const ts = headers['x-slack-request-timestamp'] as string | undefined
   if (!sig || !ts || !signingSecret) return false
@@ -19,9 +18,14 @@ export function verifySlackSignature(rawBody: Buffer, headers: any): boolean {
   }
 }
 
-export async function postSlackMessage(channel: string, text: string) {
-  const token = process.env.SLACK_BOT_TOKEN || ''
+export async function postSlackMessage(token: string, channel: string, text: string) {
   if (!token) throw new Error('missing_slack_token')
   const web = new WebClient(token)
   return web.chat.postMessage({ channel, text })
+}
+
+export async function postSlackReaction(token: string, channel: string, timestamp: string, emoji: string) {
+  if (!token) throw new Error('missing_slack_token')
+  const web = new WebClient(token)
+  return web.reactions.add({ channel, timestamp, name: emoji })
 }
