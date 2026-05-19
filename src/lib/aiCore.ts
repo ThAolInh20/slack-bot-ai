@@ -1,4 +1,4 @@
-import { GoogleGenAI, Type } from '@google/genai'
+import { GoogleGenAI } from '@google/genai'
 import Anthropic from '@anthropic-ai/sdk'
 import { botsConfig } from '../config/bots'
 
@@ -8,39 +8,77 @@ const geminiClient = new GoogleGenAI({
 
 const fallbackModels = ['gemini-2.5-flash', 'gemini-2.5-flash-lite']
 
-export async function analyzeRouter(historyText: string): Promise<string | null> {
-  const botsDescriptions = Object.values(botsConfig).map(b => `- ID: ${b.id}\n  Persona: ${b.personaPrompt}`).join('\n\n')
-  
-  const prompt = `You are a routing agent for a Slack workspace.
-Your job is to analyze the following conversation history and decide which bot is best suited to speak next, based on their personas.
-IMPORTANT: To keep the conversation natural, DO NOT select the bot that sent the very last message in the history.
-CRITICAL: You MUST always pick a bot to continue the conversation. The conversation is meant to run infinitely. Do not ever return an empty string for selected_bot_id unless absolutely necessary due to a system error. Always keep the conversation going!
+export type ScriptItem = { botId: string; text: string }
 
-Return ONLY a valid JSON object matching this schema:
-{
-  "selected_bot_id": "the ID of the bot",
-  "reasoning": "why this bot was chosen"
+export function parseScript(text: string): ScriptItem[] {
+  const items: ScriptItem[] = []
+  const lines = text.split('\n')
+  const validBotIds = Object.keys(botsConfig)
+
+  for (const line of lines) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+
+    const firstPipeIndex = trimmed.indexOf('|')
+    if (firstPipeIndex > 0) {
+      const botId = trimmed.slice(0, firstPipeIndex).trim()
+      const msgText = trimmed.slice(firstPipeIndex + 1).trim()
+
+      // Basic validation
+      if (validBotIds.includes(botId) && msgText) {
+        items.push({ botId, text: msgText })
+      }
+    }
+  }
+  return items
 }
-Do not wrap it in markdown backticks.
 
-Available Bots:
+export async function generateConversationScript(historyText: string): Promise<ScriptItem[]> {
+  const botsDescriptions = Object.values(botsConfig).map(b => `- ID: ${b.id}\n  Persona: ${b.personaPrompt}`).join('\n\n')
+
+  const prompt = `You are the lead scriptwriter for an ongoing group chat.
+Your job is to generate the next 100-200 messages for the conversation, making it natural, engaging, and aligned with each bot's persona.
+Read the conversation history and continue the dialogue.
+Đảm bảo luôn có nội dung mới sau khoảng 20-30 lần chat(có mở đầu, thân, kết thúc)
+CRITICAL RULES:
+Các bot bớt chia sẻ về bản thân, mà điều đó nên dc thể hiện qua phong cách nói
+Kịch bản nên giống 1 cuộc cãi vã nơi các ai có cái tôi cao, thích thể hiện
+
+nó nên mang tính drama, nơi các ai ko thích nhau, và thích chê bai người khác, còn bản thân thì tự cao
+
+
+AVAILABLE BOTS:
 ${botsDescriptions}
 
-Conversation History (Last 10 messages):
+OUTPUT FORMAT:
+You MUST output ONLY a Pipe-Separated Values (PSV) format. No markdown blocks, no JSON, no explanations.
+Format: botId|message
+Example:
+senna|Chào mọi người!
+ochabi|Chào Senna, hôm nay thế nào?
+minimax_bot|Hệ thống đang hoạt động bình thường.
+
+CRITICAL RULES:
+1. Generate between 100 to 200 lines. The conversation must be long!
+2. Do not include markdown code block backticks (like \`\`\`).
+3. Each line must start with a valid bot ID exactly matching one of the available bots, followed by a pipe character "|", followed by their message.
+4. Speak in Vietnamese (trả lời tiếng việt).
+
+Conversation History (Last 20 messages):
 ${historyText}`
 
-  const routerProvider = process.env.ROUTER_AI_PROVIDER || 'gemini'
+  const aiProvider = process.env.ROUTER_AI_PROVIDER || 'gemini'
 
-  if (routerProvider === 'anthropic') {
+  if (aiProvider === 'anthropic') {
     const anthropic = new Anthropic({
       apiKey: process.env.MINIMAX_API_KEY || '',
       baseURL: process.env.MINIMAX_API_URL || 'https://api.minimax.io/anthropic'
     })
-    
+
     try {
       const msg = await anthropic.messages.create({
         model: process.env.ROUTER_AI_MODEL || 'MiniMax-Text-01',
-        max_tokens: 1024,
+        max_tokens: 8192,
         messages: [
           { role: 'user', content: prompt }
         ]
@@ -48,95 +86,17 @@ ${historyText}`
 
       if (msg.content[0].type === 'text') {
         let text = msg.content[0].text.trim()
-        // Strip markdown backticks if present
-        text = text.replace(/^```json/i, '').replace(/```$/i, '').trim()
-        const data = JSON.parse(text || '{}')
-        return data.selected_bot_id || null
+        text = text.replace(/^```[a-z]*\n/i, '').replace(/\n```$/i, '').trim()
+        return parseScript(text)
       }
-      return null
+      return []
     } catch (e: any) {
-      console.error("[Router] Anthropic Router Error:", e.message || e)
-      return null
+      console.error("[ScriptGen] Anthropic/Minimax Error:", e.message || e)
+      return []
     }
   }
 
-  // DEFAULT GEMINI ROUTER
-  let lastError;
-  for (const modelName of fallbackModels) {
-    try {
-      const response = await geminiClient.models.generateContent({
-        model: modelName,
-        contents: prompt,
-        config: {
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              selected_bot_id: { type: Type.STRING, description: "The ID of the bot to reply, or empty string if none." },
-              reasoning: { type: Type.STRING, description: "Why this bot was chosen." }
-            },
-            required: ["selected_bot_id"]
-          }
-        }
-      })
-
-      const data = JSON.parse(response.text || '{}')
-      return data.selected_bot_id || null
-    } catch (e: any) {
-      console.warn(`[Router] Model ${modelName} failed (Quota/Error): ${e.message || e}`)
-      lastError = e
-    }
-  }
-  
-  console.error("Router AI Error: All fallback models exhausted.", lastError)
-  return null
-}
-
-export async function generateReply(botId: string, personaPrompt: string, historyText: string): Promise<string | null> {
-  const botConfig = botsConfig[botId]
-  if (!botConfig) return null
-
-  const prompt = `You are playing a role in a Slack workspace. 
-Role instructions: ${personaPrompt}
-
-Read the conversation history below and respond naturally to the latest message as your persona.
-Conversation History:
-${historyText}
-
-Your response (trả lời tiếng việt):`
-
-  // ANTHROPIC / MINIMAX PROVIDER
-  if (botConfig.aiProvider === 'anthropic') {
-    if (!botConfig.aiApiKey) {
-      console.error(`[Worker] Anthropic API Key missing for bot ${botId}`)
-      return null
-    }
-    try {
-      const anthropic = new Anthropic({
-        apiKey: botConfig.aiApiKey,
-        baseURL: botConfig.aiBaseUrl // e.g., 'https://api.minimax.io/anthropic'
-      })
-
-      const msg = await anthropic.messages.create({
-        model: botConfig.aiModel || 'MiniMax-Text-01',
-        max_tokens: 1024,
-        system: personaPrompt,
-        messages: [
-          { role: 'user', content: `Conversation History:\n${historyText}\n\nYour response (trả lời tiếng việt):` }
-        ]
-      })
-
-      if (msg.content[0].type === 'text') {
-        return msg.content[0].text
-      }
-      return null
-    } catch (e: any) {
-      console.error(`[Worker] Anthropic/Minimax Error for bot ${botId}:`, e.message || e)
-      return null
-    }
-  }
-
-  // DEFAULT GEMINI PROVIDER
+  // DEFAULT GEMINI
   let lastError;
   for (const modelName of fallbackModels) {
     try {
@@ -145,13 +105,18 @@ Your response (trả lời tiếng việt):`
         contents: prompt
       })
 
-      return response.text || null
+      let text = response.text?.trim() || ''
+      text = text.replace(/^```[a-z]*\n/i, '').replace(/\n```$/i, '').trim()
+
+      const parsed = parseScript(text)
+      if (parsed.length > 0) return parsed;
+      console.warn(`[ScriptGen] Model ${modelName} returned 0 valid lines. Text: ${text.slice(0, 100)}...`)
     } catch (e: any) {
-      console.warn(`[Worker] Model ${modelName} failed (Quota/Error): ${e.message || e}`)
+      console.warn(`[ScriptGen] Model ${modelName} failed: ${e.message || e}`)
       lastError = e
     }
   }
 
-  console.error("Worker AI Error: All fallback models exhausted.", lastError)
-  return null
+  console.error("ScriptGen Error: All fallback models exhausted or failed.", lastError)
+  return []
 }

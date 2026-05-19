@@ -1,7 +1,7 @@
 import { FastifyInstance, FastifyPluginOptions } from 'fastify'
-import { verifySlackSignature, postSlackMessage, getSlackHistory } from '../lib/slackUtils'
+import { verifySlackSignature } from '../lib/slackUtils'
 import { getBotConfig } from '../config/bots'
-import { analyzeRouter, generateReply } from '../lib/aiCore'
+import { getQueueLength, triggerScriptGeneration } from '../lib/queueManager'
 
 const processedEvents = new Set<string>()
 
@@ -51,44 +51,11 @@ export default async function slackRoutes(fastify: FastifyInstance, _opts: Fasti
       }
 
       if (ev.type === 'message' && ev.text && ev.channel) {
-        // Run AI Pipeline in background so we can return 200 OK to Slack immediately (avoiding 3s timeout)
-        ;(async () => {
-          try {
-            fastify.log.info({ channel: ev.channel, user: ev.user, eventId }, 'Background: Fetching history...')
-            
-            const historyMessages = await getSlackHistory(botConfig.token, ev.channel, ev.thread_ts, 10)
-            
-            const historyText = historyMessages.map((m: any) => {
-              const sender = m.bot_id ? `Bot_App_ID[${m.bot_id}]` : `User[${m.user}]`
-              return `${sender}: ${m.text}`
-            }).join('\n')
-
-            fastify.log.info('Background: Starting AI Router...')
-            let selectedBotId = await analyzeRouter(historyText)
-            
-            if (selectedBotId) {
-              selectedBotId = selectedBotId.toLowerCase().trim()
-              const targetBotConfig = getBotConfig(selectedBotId)
-              if (targetBotConfig && targetBotConfig.token) {
-                fastify.log.info({ selectedBotId }, 'Background: Router selected bot. Starting AI Worker...')
-                
-                const replyText = await generateReply(selectedBotId, targetBotConfig.personaPrompt, historyText)
-                
-                if (replyText) {
-                  // Artificial Delay to prevent API spam and make conversation natural
-                  await new Promise(resolve => setTimeout(resolve, 3000))
-                  
-                  await postSlackMessage(targetBotConfig.token, ev.channel, replyText)
-                  fastify.log.info({ selectedBotId }, 'Background: Replied to Slack via AI Worker')
-                }
-              }
-            } else {
-              fastify.log.info('Background: Router decided no bot should reply.')
-            }
-          } catch (err) {
-            fastify.log.error(err, 'Background AI process failed')
-          }
-        })()
+        // Kickstart script generation if queue is low
+        if (getQueueLength(ev.channel) <= 2) {
+          fastify.log.info({ channel: ev.channel }, 'Queue is low, triggering background script generation...');
+          triggerScriptGeneration(ev.channel);
+        }
       }
     }
 

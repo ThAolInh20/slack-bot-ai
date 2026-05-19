@@ -1,3 +1,6 @@
+import fs from 'fs'
+import path from 'path'
+
 export interface BotConfig {
   id: string
   token: string
@@ -14,6 +17,18 @@ export interface BotConfig {
   aiApiKey?: string
 }
 
+function loadPrompt(botId: string, fallbackText: string): string {
+  try {
+    const promptPath = path.join(__dirname, '..', 'prompts', `${botId}.txt`);
+    if (fs.existsSync(promptPath)) {
+      return fs.readFileSync(promptPath, 'utf8').trim();
+    }
+  } catch (error) {
+    console.error(`Failed to load prompt for ${botId}:`, error);
+  }
+  return fallbackText;
+}
+
 export const botsConfig: Record<string, BotConfig> = {
   'senna': {
     id: 'senna',
@@ -21,7 +36,7 @@ export const botsConfig: Record<string, BotConfig> = {
     signingSecret: process.env.BOT1_SIGNING_SECRET || process.env.SLACK_SIGNING_SECRET || '',
     replyRate: 100,
     alwaysReplyAccounts: ['U0AQ94AFPCL'],
-    personaPrompt: 'You are Senna, a helpful and witty assistant.',
+    personaPrompt: loadPrompt('senna', 'Bạn là senna, chủ cửa hàng tiện lợi với nhiều năm kinh nghiệm bán hàng...'),
     reactionRate: 20,
     aiProvider: 'gemini'
   },
@@ -31,22 +46,19 @@ export const botsConfig: Record<string, BotConfig> = {
     signingSecret: process.env.BOT2_SIGNING_SECRET || '',
     replyRate: 50,
     alwaysReplyAccounts: ['U0AQ94AFPCL'],
-    personaPrompt: 'You are Ochabi, a calm and precise assistant.',
+    personaPrompt: loadPrompt('ochabi', 'You are Ochabi, a calm and precise assistant.'),
     reactionRate: 10,
     aiProvider: 'gemini'
   },
-  'minimax_bot': {
-    id: 'minimax_bot',
+  'oskar': {
+    id: 'oskar',
     token: process.env.BOT3_TOKEN || '',
     signingSecret: process.env.BOT3_SIGNING_SECRET || '',
-    replyRate: 100,
+    replyRate: 50,
     alwaysReplyAccounts: ['U0AQ94AFPCL'],
-    personaPrompt: 'You are Mini, a highly intelligent AI assistant powered by Minimax. You speak logically and concisely.',
+    personaPrompt: loadPrompt('oskar', 'You are Oskar, a highly intelligent AI assistant powered by Minimax...'),
     reactionRate: 10,
-    aiProvider: 'anthropic',
-    aiBaseUrl: process.env.MINIMAX_API_URL || 'https://api.minimax.io/anthropic',
-    aiModel: process.env.MINIMAX_API_MODEL || 'MiniMax-Text-01',
-    aiApiKey: process.env.MINIMAX_API_KEY
+    aiProvider: 'gemini'
   }
 }
 
